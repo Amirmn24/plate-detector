@@ -1,0 +1,139 @@
+{% extends 'base.html' %}
+
+{% block title %}آپلود تصویر - سیستم تشخیص خودرو{% endblock %}
+
+{% block content %}
+<div class="main-container">
+    <h1 class="page-title">
+        <i class="fas fa-camera"></i> تشخیص خودرو در تصویر
+    </h1>
+    <p class="page-subtitle">
+        تصویر خود را آپلود کنید تا خودروهای موجود در آن شناسایی شوند
+    </p>
+
+    <form method="post" enctype="multipart/form-data" id="uploadForm">
+        {% csrf_token %}
+        
+        <div class="upload-area" onclick="document.getElementById('imageInput').click()">
+            <div class="upload-icon">
+                <i class="fas fa-cloud-upload-alt"></i>
+            </div>
+            <h3>برای آپلود تصویر کلیک کنید</h3>
+            <p class="text-muted">یا تصویر را اینجا بکشید و رها کنید</p>
+            <p class="text-muted mt-3">
+                <small>فرمت‌های پشتیبانی شده: JPG, PNG, BMP, WEBP</small>
+            </p>
+            {{ form.image }}
+        </div>
+        
+        <div id="imagePreview" class="text-center mt-4" style="display: none;">
+            <img id="preview" class="result-image" alt="پیش‌نمایش">
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary btn-lg">
+                    <i class="fas fa-search"></i> شروع تشخیص
+                </button>
+                <button type="button" class="btn btn-secondary btn-lg" onclick="resetForm()">
+                    <i class="fas fa-times"></i> انصراف
+                </button>
+            </div>
+        </div>
+    </form>
+
+    {% if recent_images %}
+    <div class="mt-5">
+        <h3 class="text-center mb-4">
+            <i class="fas fa-images"></i> آخرین تصاویر پردازش شده
+        </h3>
+        <div class="image-grid">
+            {% for img in recent_images %}
+            <div class="image-card">
+                <a href="{% url 'result' img.pk %}">
+                    {% if img.processed_image %}
+                        <img src="{{ img.processed_image.url }}" alt="تصویر {{ img.id }}">
+                    {% else %}
+                        <img src="{{ img.image.url }}" alt="تصویر {{ img.id }}">
+                    {% endif %}
+                </a>
+                <div class="image-card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span>
+                            {% if img.has_vehicle %}
+                                <i class="fas fa-check-circle text-success"></i>
+                                {{ img.vehicle_count }} خودرو
+                            {% else %}
+                                <i class="fas fa-times-circle text-danger"></i>
+                                بدون خودرو
+                            {% endif %}
+                        </span>
+                        <small class="text-muted">
+                            {{ img.uploaded_at|date:"Y/m/d H:i" }}
+                        </small>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const imageInput = document.getElementById('imageInput');
+    const imagePreview = document.getElementById('imagePreview');
+    const preview = document.getElementById('preview');
+    const uploadArea = document.querySelector('.upload-area');
+
+    // پیش‌نمایش تصویر انتخاب شده
+    imageInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                preview.src = e.target.result;
+                imagePreview.style.display = 'block';
+                uploadArea.style.display = 'none';
+            };
+            reader.readAsDataURL(file);
+        }
+    });
+
+    // Drag and Drop
+    uploadArea.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        uploadArea.style.borderColor = '#764ba2';
+        uploadArea.style.background = 'rgba(118, 75, 162, 0.1)';
+    });
+
+    uploadArea.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        uploadArea.style.borderColor = '#667eea';
+        uploadArea.style.background = 'linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%)';
+    });
+
+    uploadArea.addEventListener('drop', function(e) {
+        e.preventDefault();
+        uploadArea.style.borderColor = '#667eea';
+        uploadArea.style.background = 'linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%)';
+        
+        const file = e.dataTransfer.files[0];
+        if (file && file.type.startsWith('image/')) {
+            imageInput.files = e.dataTransfer.files;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                preview.src = e.target.result;
+                imagePreview.style.display = 'block';
+                uploadArea.style.display = 'none';
+            };
+            reader.readAsDataURL(file);
+        }
+    });
+
+    function resetForm() {
+        imageInput.value = '';
+        imagePreview.style.display = 'none';
+        uploadArea.style.display = 'block';
+    }
+</script>
+{% endblock %}

@@ -1,0 +1,127 @@
+{% extends 'base.html' %}
+
+{% block title %}تاریخچه - سیستم تشخیص خودرو{% endblock %}
+
+{% block content %}
+<div class="main-container">
+    <h1 class="page-title">
+        <i class="fas fa-history"></i> تاریخچه تصاویر
+    </h1>
+    <p class="page-subtitle">
+        تمام تصاویری که تاکنون پردازش شده‌اند
+    </p>
+
+    {% if images %}
+        <!-- آمار کلی -->
+        <div class="row mb-5">
+            <div class="col-md-4">
+                <div class="stats-card">
+                    <div class="stats-number">{{ images.count }}</div>
+                    <div class="stats-label">کل تصاویر</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="stats-card">
+                    <div class="stats-number text-success">
+                        {{ images|length|add:0 }}
+                        {% for img in images %}
+                            {% if img.has_vehicle %}
+                                {% if forloop.first %}{{ forloop.counter0 }}{% endif %}
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                    <div class="stats-label">با خودرو</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="stats-card">
+                    <div class="stats-number text-danger">
+                        {{ images|length|add:0 }}
+                        {% for img in images %}
+                            {% if not img.has_vehicle %}
+                                {% if forloop.first %}{{ forloop.counter0 }}{% endif %}
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                    <div class="stats-label">بدون خودرو</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- جدول تصاویر -->
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>پیش‌نمایش</th>
+                        <th>وضعیت</th>
+                        <th>تعداد خودرو</th>
+                        <th>تاریخ</th>
+                        <th>عملیات</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for img in images %}
+                    <tr>
+                        <td>{{ forloop.counter }}</td>
+                        <td>
+                            <img src="{{ img.image.url }}" 
+                                 style="width: 80px; height: 60px; object-fit: cover; border-radius: 8px;"
+                                 alt="تصویر {{ img.id }}">
+                        </td>
+                        <td>
+                            {% if img.has_vehicle %}
+                                <span class="badge bg-success">
+                                    <i class="fas fa-check-circle"></i> دارای خودرو
+                                </span>
+                            {% else %}
+                                <span class="badge bg-danger">
+                                    <i class="fas fa-times-circle"></i> بدون خودرو
+                                </span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <strong>{{ img.vehicle_count }}</strong>
+                            {% if img.detection_result.vehicles %}
+                                <br>
+                                <small class="text-muted">
+                                    {% for vehicle in img.detection_result.vehicles %}
+                                        {% if vehicle.type == 'car' %}
+                                            <i class="fas fa-car"></i>
+                                        {% elif vehicle.type == 'motorcycle' %}
+                                            <i class="fas fa-motorcycle"></i>
+                                        {% elif vehicle.type == 'bus' %}
+                                            <i class="fas fa-bus"></i>
+                                        {% elif vehicle.type == 'truck' %}
+                                            <i class="fas fa-truck"></i>
+                                        {% endif %}
+                                    {% endfor %}
+                                </small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {{ img.uploaded_at|date:"Y/m/d" }}<br>
+                            <small class="text-muted">{{ img.uploaded_at|date:"H:i" }}</small>
+                        </td>
+                        <td>
+                            <a href="{% url 'result' img.pk %}" class="btn btn-sm btn-primary">
+                                <i class="fas fa-eye"></i> مشاهده
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <div class="text-center py-5">
+            <i class="fas fa-inbox" style="font-size: 100px; color: #ccc;"></i>
+            <h3 class="mt-4 text-muted">هنوز هیچ تصویری پردازش نشده است</h3>
+            <a href="{% url 'home' %}" class="btn btn-primary btn-lg mt-4">
+                <i class="fas fa-upload"></i> آپلود اولین تصویر
+            </a>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

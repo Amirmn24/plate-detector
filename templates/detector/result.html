@@ -1,0 +1,143 @@
+{% extends 'base.html' %}
+
+{% block title %}نتیجه تشخیص - سیستم تشخیص خودرو{% endblock %}
+
+{% block content %}
+<div class="main-container">
+    <h1 class="page-title">
+        <i class="fas fa-chart-bar"></i> نتیجه تشخیص
+    </h1>
+
+    <div class="row mt-5">
+        <!-- تصویر اصلی -->
+        <div class="col-md-6 mb-4">
+            <h4 class="text-center mb-3">
+                <i class="fas fa-image"></i> تصویر اصلی
+            </h4>
+            <img src="{{ uploaded_image.image.url }}" class="result-image" alt="تصویر اصلی">
+        </div>
+
+        <!-- تصویر پردازش شده -->
+        <div class="col-md-6 mb-4">
+            <h4 class="text-center mb-3">
+                <i class="fas fa-magic"></i> تصویر پردازش شده
+            </h4>
+            {% if uploaded_image.processed_image %}
+                <img src="{{ uploaded_image.processed_image.url }}" class="result-image" alt="تصویر پردازش شده">
+            {% else %}
+                <div class="stats-card">
+                    <i class="fas fa-times-circle" style="font-size: 80px; color: #999;"></i>
+                    <p class="mt-3 text-muted">هیچ خودرویی شناسایی نشد</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- آمار -->
+    <div class="row mt-4">
+        <div class="col-md-4">
+            <div class="stats-card">
+                <div class="stats-number">
+                    {% if uploaded_image.has_vehicle %}
+                        <i class="fas fa-check-circle text-success"></i>
+                    {% else %}
+                        <i class="fas fa-times-circle text-danger"></i>
+                    {% endif %}
+                </div>
+                <div class="stats-label">
+                    {% if uploaded_image.has_vehicle %}
+                        خودرو شناسایی شد
+                    {% else %}
+                        خودرو شناسایی نشد
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-4">
+            <div class="stats-card">
+                <div class="stats-number">{{ uploaded_image.vehicle_count }}</div>
+                <div class="stats-label">تعداد خودرو</div>
+            </div>
+        </div>
+
+        <div class="col-md-4">
+            <div class="stats-card">
+                <div class="stats-number">
+                    <i class="far fa-clock"></i>
+                </div>
+                <div class="stats-label">
+                    {{ uploaded_image.uploaded_at|date:"Y/m/d" }}<br>
+                    {{ uploaded_image.uploaded_at|date:"H:i" }}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- جزئیات خودروها -->
+    {% if uploaded_image.detection_result.vehicles %}
+    <div class="mt-5">
+        <h3 class="text-center mb-4">
+            <i class="fas fa-list"></i> جزئیات خودروهای شناسایی شده
+        </h3>
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>نوع خودرو</th>
+                        <th>میزان اطمینان</th>
+                        <th>موقعیت (x, y, width, height)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for vehicle in uploaded_image.detection_result.vehicles %}
+                    <tr>
+                        <td>{{ forloop.counter }}</td>
+                        <td>
+                            <span class="vehicle-badge badge-{{ vehicle.type }}">
+                                {% if vehicle.type == 'car' %}
+                                    <i class="fas fa-car"></i> ماشین
+                                {% elif vehicle.type == 'motorcycle' %}
+                                    <i class="fas fa-motorcycle"></i> موتور
+                                {% elif vehicle.type == 'bus' %}
+                                    <i class="fas fa-bus"></i> اتوبوس
+                                {% elif vehicle.type == 'truck' %}
+                                    <i class="fas fa-truck"></i> کامیون
+                                {% endif %}
+                            </span>
+                        </td>
+                        <td>
+                            <div class="progress" style="height: 25px;">
+                                <div class="progress-bar bg-success" role="progressbar" 
+                                     style="width: {{ vehicle.confidence|floatformat:0 }}%">
+                                    {{ vehicle.confidence|floatformat:0 }}%
+                                </div>
+                            </div>
+                        </td>
+                        <td>
+                            <small class="text-muted">
+                                ({{ vehicle.bbox.0 }}, {{ vehicle.bbox.1 }}, 
+                                 {{ vehicle.bbox.2|add:"-"|add:vehicle.bbox.0 }}, 
+                                 {{ vehicle.bbox.3|add:"-"|add:vehicle.bbox.1 }})
+                            </small>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- دکمه‌ها -->
+    <div class="text-center mt-5">
+        <a href="{% url 'home' %}" class="btn btn-primary btn-lg">
+            <i class="fas fa-upload"></i> آپلود تصویر جدید
+        </a>
+        <a href="{% url 'history' %}" class="btn btn-secondary btn-lg">
+            <i class="fas fa-history"></i> مشاهده تاریخچه
+        </a>
+    </div>
+</div>
+{% endblock %}
