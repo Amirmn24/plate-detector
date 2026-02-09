@@ -5,3 +5,5 @@ numpy
 Pillow
 easyocr
 torch
+gitpython>=3.1.30
+urllib3>=2.6.0

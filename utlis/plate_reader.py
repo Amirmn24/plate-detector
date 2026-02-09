@@ -1,6 +1,8 @@
 """
-ماژول تشخیص و خواندن پلاک ایرانی
-با استفاده از YOLO برای تشخیص پلاک و EasyOCR برای خواندن متن
+ماژول تشخیص و خواندن پلاک ایرانی.
+برای تشخیص پلاک از مدل YOLOv5 مخصوص پلاک فارسی (plateYolo.pt) استفاده می‌شود
+در صورت نبود فایل مدل، از روش پردازش تصویر (رنگ/شکل) به عنوان fallback استفاده می‌شود.
+منبع مدل: https://github.com/truthofmatthew/persian-license-plate-recognition
 """
 
 import os
@@ -8,13 +10,12 @@ import cv2
 import numpy as np
 import re
 import time
-from ultralytics import YOLO
 
 # مسیر ریشه پروژه (یک سطح بالاتر از utlis)
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# مسیر پیش‌فرض مدل YOLO در پروژه تا هر بار از اینترنت دانلود نشود
-_DEFAULT_YOLO_MODEL = os.path.join(_PROJECT_ROOT, "yolov8n.pt")
-# پوشه ذخیره مدل‌های EasyOCR در پروژه (یک بار دانلود، بعداً از همینجا بارگذاری می‌شود)
+# مدل تشخیص پلاک YOLOv5 (پلاک فارسی) - از repo persian-license-plate-recognition
+_PLATE_YOLOV5_PATH = os.path.join(_PROJECT_ROOT, "model", "plateYolo.pt")
+# پوشه ذخیره مدل‌های EasyOCR در پروژه
 _EASYOCR_MODEL_DIR = os.path.join(_PROJECT_ROOT, "models", "easyocr")
 
 
@@ -32,66 +33,104 @@ class IranianPlateReader:
         'ه': 'ه', 'ی': 'ی',
     }
     
-    def __init__(self, plate_model_path=None, confidence=0.3):
+    def __init__(self, plate_model_path=None, confidence=0.25):
         """
-        مقداردهی اولیه
+        مقداردهی اولیه.
+        اگر مدل plateYolo.pt (YOLOv5 پلاک فارسی) در مسیر model/plateYolo.pt باشد، از آن استفاده می‌شود؛
+        در غیر این صورت از روش تشخیص بر اساس رنگ/شکل استفاده می‌شود.
         
         Args:
-            plate_model_path: مسیر مدل YOLO برای تشخیص پلاک (پیش‌فرض: yolov8n.pt داخل پروژه)
-            confidence: حداقل میزان اطمینان برای تشخیص
+            plate_model_path: مسیر فایل مدل تشخیص پلاک (plateYolo.pt). پیش‌فرض: model/plateYolo.pt
+            confidence: حداقل اطمینان برای تشخیص پلاک (۰.۲۵ برای پلاک‌های کوچک مناسب است)
         """
-        if plate_model_path is None or plate_model_path == "yolov8n.pt":
-            plate_model_path = _DEFAULT_YOLO_MODEL if os.path.isfile(_DEFAULT_YOLO_MODEL) else "yolov8n.pt"
-        elif not os.path.isabs(plate_model_path) and not os.path.isfile(plate_model_path):
-            local = os.path.join(_PROJECT_ROOT, plate_model_path)
-            if os.path.isfile(local):
-                plate_model_path = local
-        print(f"[*] در حال بارگذاری مدل تشخیص پلاک از: {plate_model_path}")
-        self.plate_model = YOLO(plate_model_path)
         self.confidence = confidence
-        self.ocr_reader = None  # به صورت lazy load
-        self._ocr_failed = False  # اگر دانلود OCR شکست خورد، دوباره تلاش نکن
-        print("[+] مدل تشخیص پلاک آماده است!")
+        self.ocr_reader = None
+        self._ocr_failed = False
+        self._plate_model = None  # مدل YOLOv5 برای تشخیص پلاک
+        
+        path = plate_model_path or _PLATE_YOLOV5_PATH
+        if not os.path.isabs(path):
+            path = os.path.join(_PROJECT_ROOT, path) if not os.path.isfile(path) else path
+        if os.path.isfile(path):
+            try:
+                import torch
+                print(f"[*] در حال بارگذاری مدل تشخیص پلاک YOLOv5 از: {path}")
+                self._plate_model = torch.hub.load(
+                    "ultralytics/yolov5",
+                    "custom",
+                    path=path,
+                    force_reload=False,
+                    trust_repo=True,
+                )
+                self._plate_model.conf = self.confidence
+                print("[+] مدل تشخیص پلاک (YOLOv5) آماده است!")
+            except Exception as e:
+                print(f"[!] خطا در بارگذاری مدل پلاک: {e}. از روش تشخیص با رنگ/شکل استفاده می‌شود.")
+                self._plate_model = None
+        else:
+            print("[!] فایل مدل پلاک (plateYolo.pt) یافت نشد. از روش رنگ/شکل استفاده می‌شود.")
+            print("    برای دقت بالاتر، مدل را از این آدرس دریافت کنید:")
+            print("    https://github.com/truthofmatthew/persian-license-plate-recognition")
+            print("    و در پوشه model با نام plateYolo.pt ذخیره کنید.")
     
+    @staticmethod
+    def _easyocr_models_exist():
+        """بررسی وجود فایل‌های مدل EasyOCR در پوشهٔ پروژه تا دانلود مجدد نشود."""
+        if not os.path.isdir(_EASYOCR_MODEL_DIR):
+            return False
+        # EasyOCR حداقل فایل تشخیص (craft) و مدل‌های زبان را ذخیره می‌کند
+        for name in os.listdir(_EASYOCR_MODEL_DIR):
+            if name.endswith(".pth") or name.endswith(".zip"):
+                return True
+        return False
+
     def _get_ocr_reader(self):
-        """دریافت یا ایجاد OCR reader (lazy loading) با تلاش مجدد و ذخیره محلی"""
+        """دریافت یا ایجاد OCR reader (lazy loading). فقط در صورت نبود مدل دانلود می‌شود."""
         if self._ocr_failed:
             return None
         if self.ocr_reader is None:
             try:
                 import easyocr
             except ImportError:
-                print("[!] خطا: کتابخانه easyocr نصب نیست.")
-                print("    لطفا با دستور زیر نصب کنید:")
-                print("    pip install easyocr")
+                print("[!] خطا: کتابخانه easyocr نصب نیست. pip install easyocr")
                 self._ocr_failed = True
                 return None
             os.makedirs(_EASYOCR_MODEL_DIR, exist_ok=True)
-            max_attempts = 3
+            # اگر مدل‌ها قبلاً در پوشهٔ پروژه ذخیره شده‌اند، دانلود مجدد نکن
+            use_local_only = self._easyocr_models_exist()
+            max_attempts = 2 if use_local_only else 3
             for attempt in range(1, max_attempts + 1):
                 try:
-                    print(f"[*] در حال بارگذاری مدل OCR فارسی (تلاش {attempt}/{max_attempts})...")
+                    if use_local_only:
+                        print("[*] در حال بارگذاری مدل OCR از پوشهٔ محلی (بدون دانلود)...")
+                    else:
+                        print(f"[*] در حال بارگذاری مدل OCR فارسی (تلاش {attempt}/{max_attempts})...")
                     if attempt > 1:
-                        time.sleep(5)
+                        time.sleep(3)
                     self.ocr_reader = easyocr.Reader(
-                        ['fa', 'en'],
+                        ["fa", "en"],
                         gpu=False,
                         model_storage_directory=_EASYOCR_MODEL_DIR,
-                        download_enabled=True,
+                        download_enabled=not use_local_only,
                     )
                     print("[+] مدل OCR آماده است!")
                     return self.ocr_reader
                 except Exception as e:
                     err_msg = str(e).lower()
+                    if use_local_only:
+                        # مدل محلی ناقص بود؛ یک بار با دانلود تلاش کن
+                        use_local_only = False
+                        self.ocr_reader = None
+                        continue
                     if "retrieval incomplete" in err_msg or "urlopen" in err_msg or "got only" in err_msg:
-                        print(f"[!] دانلود مدل OCR ناقص بود (تلاش {attempt}/{max_attempts}). پاک‌سازی cache و تلاش مجدد...")
+                        print(f"[!] دانلود ناقص بود. پاک‌سازی و تلاش مجدد...")
                         self._remove_incomplete_easyocr_models()
                         self.ocr_reader = None
                     else:
                         print(f"[!] خطا در بارگذاری OCR: {e}")
                         self._ocr_failed = True
                         return None
-            print("[!] پس از چند تلاش، مدل OCR بارگذاری نشد. فقط تشخیص پلاک بدون خواندن متن انجام می‌شود.")
+            print("[!] مدل OCR بارگذاری نشد. فقط تشخیص پلاک (بدون خواندن متن) انجام می‌شود.")
             self._ocr_failed = True
         return self.ocr_reader
     
@@ -114,79 +153,170 @@ class IranianPlateReader:
     
     def detect_plate_region(self, vehicle_image, vehicle_bbox=None):
         """
-        تشخیص ناحیه پلاک در تصویر خودرو
-        
-        Args:
-            vehicle_image: تصویر خودرو (numpy array)
-            vehicle_bbox: مختصات خودرو در تصویر اصلی (اختیاری)
-        
-        Returns:
-            list: لیست نواحی پلاک شناسایی شده
+        تشخیص ناحیه پلاک در تصویر برش‌خوردهٔ خودرو.
+        اگر مدل YOLOv5 پلاک (plateYolo.pt) بارگذاری شده باشد از آن استفاده می‌شود؛
+        در غیر این صورت از روش رنگ/شکل استفاده می‌شود.
         """
-        # روش 1: استفاده از YOLO برای تشخیص پلاک
-        # اگر مدل مخصوص پلاک دارید، از آن استفاده کنید
-        # در غیر این صورت از روش پردازش تصویر استفاده می‌کنیم
-        
-        # روش 2: پردازش تصویر برای یافتن نواحی مستطیلی سفید
-        plates = self._detect_plate_by_color(vehicle_image)
-        
+        plates = []
+        if self._plate_model is not None:
+            plates = self._detect_plate_by_yolov5(vehicle_image)
+        if not plates:
+            plates = self._detect_plate_by_color(vehicle_image)
         return plates
+    
+    def _detect_plate_by_yolov5(self, image):
+        """
+        تشخیص پلاک با مدل YOLOv5 آموزش‌دیده برای پلاک فارسی (plateYolo.pt).
+        مدل از پروژه persian-license-plate-recognition است.
+        """
+        if image is None or image.size == 0:
+            return []
+        try:
+            # YOLOv5 از torch.hub تصویر RGB می‌خواهد
+            img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            results = self._plate_model(img_rgb)
+            # خروجی به صورت pandas با ستون‌های xmin, ymin, xmax, ymax, confidence
+            df = results.pandas().xyxy[0]
+            plates = []
+            for _, row in df.iterrows():
+                conf = float(row.get("confidence", 0))
+                if conf < self.confidence:
+                    continue
+                x1 = int(row["xmin"])
+                y1 = int(row["ymin"])
+                x2 = int(row["xmax"])
+                y2 = int(row["ymax"])
+                h_img, w_img = image.shape[:2]
+                # محدود کردن به محدوده تصویر و کمی حاشیه
+                x1 = max(0, x1 - 2)
+                y1 = max(0, y1 - 2)
+                x2 = min(w_img, x2 + 2)
+                y2 = min(h_img, y2 + 2)
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                area = (x2 - x1) * (y2 - y1)
+                plates.append({
+                    "bbox": (x1, y1, x2, y2),
+                    "confidence": conf,
+                    "area": area,
+                })
+            return plates
+        except Exception as e:
+            print(f"[!] خطا در تشخیص پلاک با YOLOv5: {e}")
+            return []
     
     def _detect_plate_by_color(self, image):
         """
-        تشخیص پلاک بر اساس رنگ و شکل
-        
-        Args:
-            image: تصویر ورودی
-        
-        Returns:
-            list: لیست نواحی پلاک
+        تشخیص پلاک بر اساس رنگ و شکل:
+        - تمرکز روی یک‌سوم پایین تصویر (محل معمول پلاک)
+        - مستطیل با نسبت ابعاد پلاک ایرانی؛ پلاک می‌تواند کمی کج باشد (minAreaRect)
+        - رنگ سفید یا زرد (پلاک سفید/زرد)
         """
-        plates = []
+        h_img, w_img = image.shape[:2]
+        # ناحیه جستجو: نیمهٔ پایین تصویر (پلاک اکثراً پایین است)، ترجیحاً یک‌سوم پایین
+        search_y_start = int(h_img * 0.45)  # از ۴۵٪ ارتفاع به پایین
+        search_roi = image[search_y_start:, :]
+        h_roi, w_roi = search_roi.shape[:2]
         
-        # تبدیل به HSV برای تشخیص بهتر رنگ
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        # ترکیب چند روش برای ماسک بهتر
+        gray = cv2.cvtColor(search_roi, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(search_roi, cv2.COLOR_BGR2HSV)
         
-        # ماسک برای رنگ سفید (پلاک سفید)
-        lower_white = np.array([0, 0, 200])
-        upper_white = np.array([180, 30, 255])
-        mask_white = cv2.inRange(hsv, lower_white, upper_white)
+        # ماسک سفید/خاکستری روشن (پلاک سفید)
+        _, white_gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        bright = cv2.inRange(gray, 180, 255)
         
-        # ماسک برای رنگ زرد (پلاک زرد)
-        lower_yellow = np.array([15, 80, 150])
-        upper_yellow = np.array([35, 255, 255])
+        # ماسک HSV برای سفید (اشباع کم، روشنایی بالا)
+        lower_white = np.array([0, 0, 180])
+        upper_white = np.array([180, 55, 255])
+        mask_white_hsv = cv2.inRange(hsv, lower_white, upper_white)
+        
+        # ماسک زرد (پلاک زرد)
+        lower_yellow = np.array([15, 60, 120])
+        upper_yellow = np.array([40, 255, 255])
         mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
         
-        # ترکیب ماسک‌ها
-        mask = cv2.bitwise_or(mask_white, mask_yellow)
+        mask = cv2.bitwise_or(mask_white_hsv, mask_yellow)
+        mask = cv2.bitwise_or(mask, bright)
         
-        # پردازش مورفولوژی
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        # مورفولوژی: بستن حفره‌ها و حذف نویز
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 5))
+        kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_close)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open)
         
-        # یافتن کانتورها
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        plates = []
         
-        # فیلتر کردن کانتورها
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < 500:  # حداقل اندازه
+            if area < 800:  # حداقل اندازه معقول برای پلاک
                 continue
             
-            x, y, w, h = cv2.boundingRect(contour)
-            aspect_ratio = w / float(h) if h > 0 else 0
+            # مستطیل با حداقل مساحت تا پلاک کج هم تشخیص داده شود
+            rect = cv2.minAreaRect(contour)
+            (cx, cy), (rw, rh), angle = rect
+            if rw <= 0 or rh <= 0:
+                continue
             
-            # نسبت ابعاد پلاک ایرانی تقریباً 3:1 تا 4:1
-            if 2.5 <= aspect_ratio <= 5.0 and w > 80 and h > 20:
-                plates.append({
-                    'bbox': (x, y, x + w, y + h),
-                    'confidence': 0.7,  # اطمینان تخمینی
-                    'area': area
-                })
+            # نسبت ابعاد پلاک ایرانی تقریباً ۳:۱ تا ۴:۱ (عرض به ارتفاع)
+            if rw >= rh:
+                aspect = rw / rh
+            else:
+                aspect = rh / rw
+            
+            if aspect < 2.2 or aspect > 5.5:
+                continue
+            
+            # حداقل اندازه پیکسلی (عرض و ارتفاع واقعی بعد از چرخش)
+            box_w = max(rw, rh)
+            box_h = min(rw, rh)
+            if box_w < 60 or box_h < 18:
+                continue
+            
+            # زاویه مجاز: پلاک تقریباً افقی (حداکثر کجی معمول)
+            if abs(angle) > 75 and abs(angle) < 105:
+                angle = angle - 90
+            if abs(angle) > 25:
+                continue
+            
+            # کادر محاط (برای برش تصویر)
+            box_points = cv2.boxPoints(rect)
+            box_points = np.int0(box_points)
+            x_roi, y_roi, w_roi_rect, h_roi_rect = cv2.boundingRect(box_points)
+            
+            # برگرداندن مختصات به فضای کل تصویر خودرو
+            x1 = max(0, x_roi)
+            y1 = max(0, search_y_start + y_roi)
+            x2 = min(w_img, x_roi + w_roi_rect)
+            y2 = min(h_img, search_y_start + y_roi + h_roi_rect)
+            
+            # حاشیه کم برای اینکه لبه پلاک و حروف بریده نشوند
+            pad = max(2, int(min(w_roi_rect, h_roi_rect) * 0.08))
+            x1 = max(0, x1 - pad)
+            y1 = max(0, y1 - pad)
+            x2 = min(w_img, x2 + pad)
+            y2 = min(h_img, y2 + pad)
+            
+            # امتیاز: ترجیح ناحیهٔ پایین‌تر (یک‌سوم پایین)
+            center_y = (y1 + y2) / 2
+            lower_third_bonus = 1.0 if center_y >= h_img * (2/3) else (0.7 if center_y >= h_img * 0.5 else 0.4)
+            area_score = min(area / 5000, 1.0)
+            aspect_ok = 1.0 if 2.8 <= aspect <= 4.5 else 0.8
+            score = lower_third_bonus * 0.5 + area_score * 0.3 + aspect_ok * 0.2
+            
+            plates.append({
+                'bbox': (x1, y1, x2, y2),
+                'confidence': min(0.5 + score * 0.4, 0.95),
+                'area': area,
+                '_score': score,
+                'angle': angle,
+            })
         
-        # مرتب‌سازی بر اساس اندازه (بزرگترین اول)
-        plates.sort(key=lambda x: x['area'], reverse=True)
+        # مرتب‌سازی بر اساس امتیاز (ترجیح یک‌سوم پایین و اندازه مناسب)
+        plates.sort(key=lambda x: (x['_score'], x['area']), reverse=True)
+        for p in plates:
+            p.pop('_score', None)
         
         return plates
     
@@ -226,29 +356,37 @@ class IranianPlateReader:
     
     def _preprocess_plate_image(self, image):
         """
-        پیش‌پردازش تصویر پلاک برای بهبود OCR
-        
-        Args:
-            image: تصویر پلاک
-        
-        Returns:
-            تصویر پردازش شده
+        پیش‌پردازش تصویر پلاک برای بهبود OCR (شامل اصلاح کجی احتمالی).
         """
-        # تبدیل به grayscale
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
-            gray = image
+            gray = image.copy()
         
-        # افزایش اندازه برای OCR بهتر
+        # اصلاح کجی: تخمین زاویه از خطوط افقی متن پلاک
+        h, w = gray.shape
+        edges = cv2.Canny(gray, 50, 150)
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=min(w, h) // 4, minLineLength=w // 4, maxLineGap=10)
+        angles = []
+        if lines is not None:
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                if abs(x2 - x1) > 5:
+                    ang = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+                    if abs(ang) < 15:
+                        angles.append(ang)
+        if angles:
+            median_angle = np.median(angles)
+            if abs(median_angle) > 0.5:
+                M = cv2.getRotationMatrix2D((w / 2, h / 2), median_angle, 1.0)
+                gray = cv2.warpAffine(gray, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+        
+        # بزرگ‌نمایی برای OCR بهتر
         scale_factor = 2
-        height, width = gray.shape
-        gray = cv2.resize(gray, (width * scale_factor, height * scale_factor))
+        gray = cv2.resize(gray, (w * scale_factor, h * scale_factor))
         
-        # اعمال threshold
+        # threshold و کاهش نویز
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # کاهش نویز
         denoised = cv2.fastNlMeansDenoising(thresh)
         
         return denoised
